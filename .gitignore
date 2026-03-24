@@ -1,2 +1,2 @@
-./cifar-10-python.tar
-./cifar-10-batches-py/
+venv/
+data/
