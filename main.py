@@ -356,7 +356,8 @@ Returns:
         # Per-class breakdown
         for c in range(10):
             class_acc = class_correct[c] / class_total[c]
-            print(f"  {CIFAR10_CLASSES[c]:<12} {class_acc:.4f}")
+            print(f"    Class: {CIFAR10_CLASSES[c]:<12} | Accuracy: {class_acc:.4f}")
+        print()
 
     # Restore best model at the end
     model.load_state_dict(best_model_state)
@@ -377,6 +378,7 @@ def main():
     print(f"Dataset ready — {len(train_graphs)} train graphs, {len(test_graphs)} test graphs.")
 
     # Instantiate the model
+    # =========== SET 1 OF HYPERPARAMETERS  =========== 
     model = SuperpixelGCN(
         in_channels=5,
         edge_dim=1,
@@ -387,13 +389,13 @@ def main():
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     # Train the model for num_epochs
-    num_epochs = 100
+    # =========== SET 2 OF HYPERPARAMETERS  =========== 
     trained_model = train(
         model=model,
         train_loader=train_loader,
         test_loader=test_loader,
-        epochs=num_epochs,
-        lr=0.001,
+        epochs=100,
+        lr=0.001, # Learning Rate
         weight_decay=1e-4,
         device=device,
     )
