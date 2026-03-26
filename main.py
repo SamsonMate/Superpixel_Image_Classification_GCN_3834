@@ -1,5 +1,5 @@
 """
-Please view README.md for details
+Please view README.md for more details
 """
 import copy
 import torch
