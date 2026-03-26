@@ -127,6 +127,9 @@ Returns:
 """
     transform = transforms.ToTensor()
 
+    # ==========
+    # Dataset Import — downloaded and cached automatically by torchvision
+    # ==========
     trainset = torchvision.datasets.CIFAR10(
         root=root, train=True, download=True, transform=transform
     )
@@ -398,8 +401,8 @@ def main():
         model=model,
         train_loader=train_loader,
         test_loader=test_loader,
-        epochs=100,
-        lr=0.001, # Learning Rate
+        epochs=50,
+        lr=0.002, # Learning Rate
         weight_decay=1e-4,
         device=device,
     )
