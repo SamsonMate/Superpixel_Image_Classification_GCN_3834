@@ -1,5 +1,5 @@
 """
-Please view README.md for more details
+Please view README.md for more pip details
 """
 import copy
 import torch
@@ -20,7 +20,7 @@ from torch_geometric.loader import DataLoader
 # Import our models dataset and segment it accordingly
 #
 
-def encode_with_superpixels(img, n_segments=50, compactness=10):
+def encode_with_superpixels(img, n_segments, compactness):
     """Encodes a single image as a graph using SLIC superpixel segmentation.
 
 Converts a tensor image into a graph representation where each node
@@ -97,7 +97,7 @@ Returns:
 
     return x, edge_index, edge_attr
 
-def build_superpixel_dataset(root="./data", n_segments=50, compactness=10):
+def build_superpixel_dataset(root="./data", n_segments=None, compactness=None):
     """Downloads CIFAR-10 and builds superpixel graph datasets for training and testing.
 
 Iterates over the CIFAR-10 train and test splits, encoding each image as
@@ -371,14 +371,18 @@ def main():
     print(f"Using device: {device}")
 
     # Import, segment, then build the dataset using superpixel image segmentation.
+    # ========== SUPERPIXEL ENCODING HYPERPARAMETERS  ===========
     print("Building superpixel datasets (this may take a while on first run)...")
-    train_graphs, test_graphs = build_superpixel_dataset()
+    train_graphs, test_graphs = build_superpixel_dataset(
+        n_segments=100,
+        compactness=10
+    )
     train_loader = DataLoader(train_graphs, batch_size=64, shuffle=True)
     test_loader = DataLoader(test_graphs, batch_size=64, shuffle=False)
     print(f"Dataset ready — {len(train_graphs)} train graphs, {len(test_graphs)} test graphs.")
 
     # Instantiate the model
-    # =========== SET 1 OF HYPERPARAMETERS  =========== 
+    # =========== MODEL HYPERPARAMETERS  =========== 
     model = SuperpixelGCN(
         in_channels=5,
         edge_dim=1,
@@ -389,7 +393,7 @@ def main():
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     # Train the model for num_epochs
-    # =========== SET 2 OF HYPERPARAMETERS  =========== 
+    # =========== TRAINING HYPERPARAMETERS  =========== 
     trained_model = train(
         model=model,
         train_loader=train_loader,

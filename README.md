@@ -23,6 +23,7 @@ Made for a university term project.
 It is recommended to use a virtual environment:
 
 ```bash
+cd Superpixel_Image_Classification_GCN_3834
 python -m venv venv
 source venv/bin/activate        # Windows: venv\Scripts\activate
 ```
@@ -37,7 +38,7 @@ pip install torch-scatter -f https://data.pyg.org/whl/torch-{TORCH_VERSION}+{CUD
 Then install the remaining dependencies:
 
 ```bash
-pip install torch-geometric torchvision scikit-image scipy tqdm
+pip install torch-geometric scikit-image scipy tqdm numpy
 ```
 
 ---
