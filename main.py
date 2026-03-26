@@ -374,7 +374,7 @@ def main():
     # ========== SUPERPIXEL ENCODING HYPERPARAMETERS  ===========
     print("Building superpixel datasets (this may take a while on first run)...")
     train_graphs, test_graphs = build_superpixel_dataset(
-        n_segments=100,
+        n_segments=50,
         compactness=10
     )
     train_loader = DataLoader(train_graphs, batch_size=64, shuffle=True)
