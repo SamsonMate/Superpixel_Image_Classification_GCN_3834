@@ -10,7 +10,8 @@ from skimage import graph
 from skimage.color import rgb2hsv
 from scipy.ndimage import mean as ndimage_mean, variance as ndimage_variance
 import torch.nn as nn
-from torch_geometric.nn import GINEConv, global_mean_pool, global_max_pool
+from torch_geometric.nn import GCNConv, global_mean_pool, global_max_pool
+from torch_scatter import scatter
 from torch.nn import BatchNorm1d, Linear, ReLU, Sequential
 from torch_geometric.loader import DataLoader
 
@@ -167,32 +168,48 @@ def build_superpixel_dataset(dataset_class, root="./data", n_segments=50, compac
 
 
 class SuperpixelGCN(nn.Module):
-    """GINE-based GNN with residual connections for classifying superpixel graphs.
+    """GCN-based model with MLP node encoder, edge feature augmentation,
+    and residual connections for classifying superpixel graphs.
+
+    Edge attributes are incorporated via pre-convolution node feature augmentation
+    (mean and max aggregation of incident edge weights) since GCNConv only supports
+    scalar edge weights natively.
 
     Args:
         in_channels (int): Input node feature size (12 with enriched features).
-        edge_dim (int): Edge feature size (2 with centroid distance added).
         hidden_dim (int): Hidden layer size.
         num_classes (int): Number of output classes.
         dropout (float): Dropout probability.
     """
 
-    def __init__(self, in_channels=12, edge_dim=2, hidden_dim=64, num_classes=10, dropout=0.5):
+    def __init__(self, in_channels=12, hidden_dim=64, num_classes=10, dropout=0.5):
         super().__init__()
 
-        # Edge encoders map edge features to match node feature dimensions
-        self.edge_encoder1 = Linear(edge_dim, in_channels)
-        self.edge_encoder2 = Linear(edge_dim, hidden_dim)
-        self.edge_encoder3 = Linear(edge_dim, hidden_dim)
+        # in_channels + 4: edge_attr has 2 columns, scatter produces 2 values per
+        # reduction (mean and max), so 4 values are appended in total
+        augmented_channels = in_channels + 4
+
+        # MLP node encoder to project augmented features into hidden space
+        # BatchNorm is intentionally omitted here as GCN layers already apply
+        # BatchNorm after each convolution, avoiding redundant normalisation
+        self.node_encoder = Sequential(
+            Linear(augmented_channels, hidden_dim),
+            ReLU(),
+            Linear(hidden_dim, hidden_dim),
+            ReLU()
+        )
 
         # Graph convolution layers
-        self.conv1 = GINEConv(Sequential(Linear(in_channels, hidden_dim), BatchNorm1d(hidden_dim), ReLU()))
-        self.conv2 = GINEConv(Sequential(Linear(hidden_dim, hidden_dim), BatchNorm1d(hidden_dim), ReLU()))
-        self.conv3 = GINEConv(Sequential(Linear(hidden_dim, hidden_dim), BatchNorm1d(hidden_dim), ReLU()))
+        self.conv1 = GCNConv(hidden_dim, hidden_dim)
+        self.conv2 = GCNConv(hidden_dim, hidden_dim)
+        self.conv3 = GCNConv(hidden_dim, hidden_dim)
 
-        # Residual projection for layer 1 — required since in_channels != hidden_dim
-        self.residual_proj = Linear(in_channels, hidden_dim)
+        # Post-convolution batch norm and activation
+        self.bn1 = BatchNorm1d(hidden_dim)
+        self.bn2 = BatchNorm1d(hidden_dim)
+        self.bn3 = BatchNorm1d(hidden_dim)
 
+        self.relu = ReLU()
         self.dropout = nn.Dropout(dropout)
 
         # Final classifier (after pooling)
@@ -202,6 +219,33 @@ class SuperpixelGCN(nn.Module):
             nn.Dropout(dropout),
             Linear(hidden_dim, num_classes)
         )
+
+    @staticmethod
+    def augment_node_features(x, edge_index, edge_attr):
+        """Aggregate incident edge attributes per node and append to node features.
+
+        Args:
+            x (Tensor): Node features (num_nodes, in_channels).
+            edge_index (Tensor): Edge indices (2, num_edges).
+            edge_attr (Tensor): Edge attributes (num_edges, 2).
+
+        Returns:
+            Tensor: Augmented node features (num_nodes, in_channels + 4).
+        """
+
+        row = edge_index[0]
+        num_nodes = x.size(0)
+
+        # Mean and max aggregation of incident edge attributes per node
+        # edge_attr has 2 columns so each reduction produces a (num_nodes, 2) tensor,
+        # giving 4 appended values in total
+        edge_mean = scatter(edge_attr, row, dim=0, dim_size=num_nodes, reduce='mean')
+
+        # Clamp max to 0 to guard against -inf for isolated nodes (no incident edges)
+        edge_max  = scatter(edge_attr, row, dim=0, dim_size=num_nodes, reduce='max').clamp(min=0)
+
+        # Concatenate aggregated edge statistics onto node features
+        return torch.cat([x, edge_mean, edge_max], dim=1)
 
     def forward(self, x, edge_index, edge_attr, batch):
         """Forward pass on batched graph.
@@ -216,12 +260,19 @@ class SuperpixelGCN(nn.Module):
             Tensor: Class logits per graph.
         """
 
-        # Layer 1: project residual to hidden_dim before adding (in_channels != hidden_dim)
-        x = self.dropout(self.conv1(x, edge_index, self.edge_encoder1(edge_attr)) + self.residual_proj(x))
+        # Augment node features with aggregated edge statistics
+        x = self.augment_node_features(x, edge_index, edge_attr)
 
-        # Layers 2-3: direct residual connections (dimensions match)
-        x = self.dropout(self.conv2(x, edge_index, self.edge_encoder2(edge_attr)) + x)
-        x = self.dropout(self.conv3(x, edge_index, self.edge_encoder3(edge_attr)) + x)
+        # Project augmented node features into hidden space via MLP
+        x = self.node_encoder(x)
+
+        # Squeeze color-difference weight to scalar for GCNConv
+        edge_weight = edge_attr[:, 0]
+
+        # Apply 3 GCN layers with residual connections, batch norm, and dropout
+        x = self.dropout(self.relu(self.bn1(self.conv1(x, edge_index, edge_weight))) + x)
+        x = self.dropout(self.relu(self.bn2(self.conv2(x, edge_index, edge_weight))) + x)
+        x = self.dropout(self.relu(self.bn3(self.conv3(x, edge_index, edge_weight))) + x)
 
         # Global pooling (mean + max)
         x = torch.cat([global_mean_pool(x, batch), global_max_pool(x, batch)], dim=1)
@@ -320,7 +371,7 @@ def main():
     # -- Dataset --
     # Swap dataset_class to use a different torchvision dataset (e.g. torchvision.datasets.CIFAR100)
     dataset_class = torchvision.datasets.CIFAR10
-    data_root     = "./data" # This is where the data will be stored/downloaded
+    data_root     = "./data"
 
     # -- SLIC (graph encoding) --
     # Recommended sweep: n_segments in [25, 50, 75, 100], compactness in [5, 10, 20, 30]
