@@ -15,6 +15,7 @@ Made for a university term project.
 - **NumPy** — array operations during graph encoding
 - **SciPy** — per-superpixel mean feature computation (`scipy.ndimage.mean`)
 - **tqdm** — progress bars for dataset encoding and training
+- **Torch Scatter** - for edge aggregation for feature augmentation
 
 ---
 
