@@ -35,6 +35,10 @@ Seperate PyTorch extension used for performance increase:
 ```bash
 pip install torch-scatter -f https://data.pyg.org/whl/torch-{TORCH_VERSION}+{CUDA}.html
 ```
+Example:
+```bash
+pip install torch-scatter -f https://data.pyg.org/whl/torch-2.11.0+cu126.html
+```
 
 Then install the remaining dependencies:
 
