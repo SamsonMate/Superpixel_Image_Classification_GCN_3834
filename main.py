@@ -280,8 +280,60 @@ class SuperpixelGCN(nn.Module):
         return self.classifier(x)
 
 
-def train(model, train_loader, test_loader, epochs=100, lr=0.001, weight_decay=1e-4, device="cuda"):
-    """Train model and return best-performing weights.
+def evaluate(model, loader, num_classes, device):
+    """Run inference over a data loader and collect predictions and labels.
+
+    Args:
+        model (nn.Module): Trained model in eval mode.
+        loader (DataLoader): Data loader to evaluate.
+        num_classes (int): Total number of classes.
+        device (str): "cuda" or "cpu".
+
+    Returns:
+        acc (float): Overall accuracy.
+        per_class_acc (np.ndarray): Per-class accuracy array of shape (num_classes,).
+        confusion (np.ndarray): Confusion matrix of shape (num_classes, num_classes),
+            where confusion[true, pred] is the count of samples with true label
+            ``true`` predicted as ``pred``.
+    """
+
+    model.eval()
+
+    all_preds  = []
+    all_labels = []
+
+    with torch.no_grad():
+        for batch in loader:
+            batch = batch.to(device)
+            out   = model(batch.x, batch.edge_index, batch.edge_attr, batch.batch)
+            preds = out.argmax(dim=1)
+
+            all_preds.append(preds.cpu().numpy())
+            all_labels.append(batch.y.cpu().numpy())
+
+    all_preds  = np.concatenate(all_preds)
+    all_labels = np.concatenate(all_labels)
+
+    # Confusion matrix: rows = true class, cols = predicted class
+    confusion = np.zeros((num_classes, num_classes), dtype=np.int64)
+    for true, pred in zip(all_labels, all_preds):
+        confusion[true, pred] += 1
+
+    # Per-class accuracy: diagonal / row sum (guard against empty classes)
+    row_sums      = confusion.sum(axis=1)
+    per_class_acc = np.where(row_sums > 0, confusion.diagonal() / row_sums, 0.0)
+
+    acc = confusion.diagonal().sum() / max(len(all_labels), 1)
+
+    return acc, per_class_acc, confusion
+
+
+def train(model, train_loader, test_loader, epochs=100, lr=0.001, weight_decay=1e-4,
+          device="cuda", num_classes=10, class_names=None):
+    """Train model and return best-performing weights, per-class accuracy, and confusion matrix.
+
+    A final evaluation pass is performed after restoring the best checkpoint so that
+    the returned metrics always correspond to the best model state.
 
     Args:
         model (nn.Module): Model to train.
@@ -291,9 +343,13 @@ def train(model, train_loader, test_loader, epochs=100, lr=0.001, weight_decay=1
         lr (float): Learning rate.
         weight_decay (float): L2 regularization.
         device (str): "cuda" or "cpu".
+        num_classes (int): Number of output classes.
+        class_names (list[str] | None): Optional class name labels for display.
 
     Returns:
-        nn.Module: Trained model with best weights.
+        model (nn.Module): Trained model with best weights loaded.
+        confusion (np.ndarray): Confusion matrix (num_classes, num_classes).
+        per_class_acc (np.ndarray): Per-class accuracy (num_classes,).
     """
 
     model = model.to(device)
@@ -315,7 +371,7 @@ def train(model, train_loader, test_loader, epochs=100, lr=0.001, weight_decay=1
             batch = batch.to(device)
             optimizer.zero_grad()
 
-            out = model(batch.x, batch.edge_index, batch.edge_attr, batch.batch)
+            out  = model(batch.x, batch.edge_index, batch.edge_attr, batch.batch)
             loss = criterion(out, batch.y)
 
             loss.backward()
@@ -326,32 +382,123 @@ def train(model, train_loader, test_loader, epochs=100, lr=0.001, weight_decay=1
         avg_loss = total_loss / len(train_loader)
 
         # ---- Evaluation phase ----
-        model.eval()
-        correct, total = 0, 0
-
-        with torch.no_grad():
-            for batch in test_loader:
-                batch = batch.to(device)
-
-                out = model(batch.x, batch.edge_index, batch.edge_attr, batch.batch)
-                preds = out.argmax(dim=1)
-
-                correct += (preds == batch.y).sum().item()
-                total += batch.y.size(0)
-
-        acc = correct / total
+        acc, _, _ = evaluate(model, test_loader, num_classes, device)
         scheduler.step(acc)
 
         if acc > best_acc:
             best_acc = acc
             best_model_state = copy.deepcopy(model.state_dict())
 
-        print(f"Epoch {epoch+1:03d} | Loss: {avg_loss:.4f} | Acc: {acc:.4f} | Best: {best_acc:.4f}")
+        print(f"\nEpoch {epoch+1:03d} | Loss: {avg_loss:.4f} | Acc: {acc:.4f} | Best: {best_acc:.4f}")
 
+    # Restore best checkpoint and run a final clean evaluation pass for metrics
     model.load_state_dict(best_model_state)
-    print(f"\nTraining complete. Best accuracy: {best_acc:.4f}")
+    best_acc, per_class_acc, confusion = evaluate(model, test_loader, num_classes, device)
 
-    return model
+    # ---- Shared formatting helpers ----
+    labels     = [class_names[i] if class_names else str(i) for i in range(num_classes)]
+    max_digits = max(len(str(confusion.max())), 4)   # minimum 4 chars for readability
+    name_w     = max(max(len(l) for l in labels), 10) # minimum 10 chars for label column
+
+    def hline(left, mid, right, fill, widths):
+        """Build a horizontal rule from box-drawing characters."""
+        return left + mid.join(fill * w for w in widths) + right
+
+    # ---- Per-class accuracy summary table ----
+    col_w = [name_w, max_digits + 2, max_digits + 2, 8]  # Class | Correct | Total | Acc
+    heads = ["Class", "Correct", "Total", "Acc"]
+
+    print(f"\nTraining complete. Best accuracy: {best_acc:.4f}")
+    print("\nPer-class accuracy")
+    print(hline("┌", "┬", "┐", "─", [w + 2 for w in col_w]))
+    print("│ " + " │ ".join(h.center(col_w[i]) for i, h in enumerate(heads)) + " │")
+    print(hline("├", "┼", "┤", "─", [w + 2 for w in col_w]))
+
+    for cls_idx in range(num_classes):
+        tp    = confusion[cls_idx, cls_idx]
+        total = int(confusion[cls_idx].sum())
+        acc   = per_class_acc[cls_idx]
+        cells = [
+            labels[cls_idx].ljust(col_w[0]),
+            str(tp).rjust(col_w[1]),
+            str(total).rjust(col_w[2]),
+            f"{acc:.4f}".rjust(col_w[3]),
+        ]
+        print("│ " + " │ ".join(cells) + " │")
+
+    print(hline("└", "┴", "┘", "─", [w + 2 for w in col_w]))
+
+    # ---- Per-class binary confusion matrices ----
+    # Each matrix shows TP/FN/FP/TN for one class treated as the positive class.
+    cell_w  = max(max_digits + 4, 10)   # wide enough for "TP: NNNN" labels
+    label_w = max(name_w, 10)
+
+    print("\nPer-class binary confusion matrices")
+
+    for cls_idx in range(num_classes):
+        name = labels[cls_idx]
+
+        tp = int(confusion[cls_idx, cls_idx])
+        fn = int(confusion[cls_idx].sum()) - tp          # true class, predicted other
+        fp = int(confusion[:, cls_idx].sum()) - tp       # other class, predicted this
+        tn = int(confusion.sum()) - tp - fn - fp
+
+        col_heads = [f"Pred: {name}", "Pred: other"]
+        row_heads = [f"True: {name}", "True: other"]
+
+        # Dynamic column widths: fit label text and counts
+        c0 = max(label_w, max(len(h) for h in row_heads))
+        c1 = max(cell_w,  len(col_heads[0]))
+        c2 = max(cell_w,  len(col_heads[1]))
+
+        top  = hline("┌", "┬", "┐", "─", [c0 + 2, c1 + 2, c2 + 2])
+        mid  = hline("├", "┼", "┤", "─", [c0 + 2, c1 + 2, c2 + 2])
+        bot  = hline("└", "┴", "┘", "─", [c0 + 2, c1 + 2, c2 + 2])
+
+        def row(label, v1_label, v1, v2_label, v2):
+            c1_text = f"{v1_label}: {v1}".center(c1)
+            c2_text = f"{v2_label}: {v2}".center(c2)
+            return f"│ {label:<{c0}} │ {c1_text} │ {c2_text} │"
+
+        print(f"\n  {name}")
+        print(top)
+        # Header row (col labels, no values)
+        print(f"│ {'':^{c0}} │ {col_heads[0]:^{c1}} │ {col_heads[1]:^{c2}} │")
+        print(mid)
+        print(row(row_heads[0], "TP", tp, "FN", fn))
+        print(mid)
+        print(row(row_heads[1], "FP", fp, "TN", tn))
+        print(bot)
+
+    # ---- Total confusion matrix ----
+    # Cell width: fit the largest count and the column header (class name)
+    tot_cell_w = max(max_digits, max(len(l) for l in labels)) + 2
+    row_label_w = name_w
+
+    print("\nTotal confusion matrix  (rows = true class, cols = predicted class)")
+    # Top border
+    print(hline("┌", "┬", "┐", "─", [row_label_w + 2] + [tot_cell_w + 2] * num_classes))
+    # Column header row
+    header_cells = "".join(f" {l:^{tot_cell_w}} │" for l in labels)
+    print(f"│ {'':^{row_label_w}} │{header_cells}")
+    print(hline("├", "┼", "┤", "─", [row_label_w + 2] + [tot_cell_w + 2] * num_classes))
+    # Data rows
+    for i, label in enumerate(labels):
+        vals = "".join(f" {confusion[i, j]:^{tot_cell_w}} │" for j in range(num_classes))
+        # Highlight diagonal (true positive) with a marker
+        diag_vals = []
+        for j in range(num_classes):
+            val_str = str(confusion[i, j])
+            if i == j:
+                val_str = f"[{val_str}]"
+            diag_vals.append(f" {val_str:^{tot_cell_w}} │")
+        print(f"│ {label:<{row_label_w}} │{''.join(diag_vals)}")
+        if i < num_classes - 1:
+            print(hline("├", "┼", "┤", "─", [row_label_w + 2] + [tot_cell_w + 2] * num_classes))
+    print(hline("└", "┴", "┘", "─", [row_label_w + 2] + [tot_cell_w + 2] * num_classes))
+    print("  Diagonal values in [brackets] are correct predictions (TP per class).\n")
+
+    return model, confusion, per_class_acc
 
 
 def main():
@@ -373,7 +520,7 @@ def main():
     dataset_class = torchvision.datasets.CIFAR10
     data_root     = "./data"
 
-    # -- SLIC (graph encoding) --
+    # -- SLIC (superpixel image graph encoding method) --
     # Recommended sweep: n_segments in [25, 50, 75, 100], compactness in [5, 10, 20, 30]
     n_segments  = 50
     compactness = 10
@@ -403,10 +550,14 @@ def main():
 
     print(f"Dataset ready — {len(train_graphs)} train, {len(test_graphs)} test")
 
+    # CIFAR-10 class names; update if switching to a different dataset
+    class_names = ["airplane", "automobile", "bird", "cat", "deer",
+                   "dog", "frog", "horse", "ship", "truck"]
+
     model = SuperpixelGCN(hidden_dim=hidden_dim, dropout=dropout)
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-    trained_model = train(
+    trained_model, confusion, per_class_acc = train(
         model=model,
         train_loader=train_loader,
         test_loader=test_loader,
@@ -414,11 +565,18 @@ def main():
         lr=lr,
         weight_decay=weight_decay,
         device=device,
+        num_classes=len(class_names),
+        class_names=class_names,
     )
 
+    # Save confusion matrix and per-class accuracy alongside model weights
     save_path = "superpixel_gcn_best.pt"
     torch.save(trained_model.state_dict(), save_path)
-    print(f"Saved to '{save_path}'")
+    print(f"Saved model to '{save_path}'")
+
+    np.save("confusion_matrix.npy", confusion)
+    np.save("per_class_acc.npy", per_class_acc)
+    print("Saved confusion_matrix.npy and per_class_acc.npy")
 
 
 if __name__ == "__main__":

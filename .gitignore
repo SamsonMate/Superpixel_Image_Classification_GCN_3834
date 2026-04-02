@@ -1,2 +1,5 @@
 venv/
 data/
+confusion_matrix.npy
+per_class_acc.npy
+superpixel_gcn_best.pt
