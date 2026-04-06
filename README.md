@@ -45,7 +45,10 @@ Then install the remaining dependencies:
 ```bash
 pip install torch-geometric scikit-image scipy tqdm numpy
 ```
-
+to run visualize_graph.py run
+```bash
+pip install matplotlib
+```
 ---
 
 ## If it says device is CPU but you have a CUDA enabled GPU:
