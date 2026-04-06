@@ -6,3 +6,4 @@ superpixel_gcn_best.pt
 per_class_f1.npy
 *.npy
 __pycache__/
+coco

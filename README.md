@@ -52,6 +52,7 @@ pip install matplotlib
 to run embeddingvisualization.py run
 ```bash
 pip install scikit-learn
+```
 ---
 
 ## If it says device is CPU but you have a CUDA enabled GPU:
