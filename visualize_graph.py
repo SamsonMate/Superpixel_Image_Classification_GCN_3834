@@ -83,7 +83,7 @@ def visualize_individual_superpixel_graph(img, n_segments=50, compactness=10, sa
 
 
 # ---------------------------------------------------------
-# 🔹 RUN THIS FILE DIRECTLY
+#  RUN THIS FILE DIRECTLY
 # ---------------------------------------------------------
 if __name__ == "__main__":
     transform = transforms.ToTensor()
